@@ -5,31 +5,6 @@
 #include <sstream>
 #include <string>
 
-GameState parseFEN(const std::string& fen) {
-    GameState s;
-    std::istringstream in(fen);
-    std::string placement, side, castling, ep;
-    in >> placement >> side >> castling >> ep;
-    int r = 0, c = 0;
-    auto pt = [](char lc) {
-        switch (lc) { case 'p': return PieceType::Pawn; case 'n': return PieceType::Knight;
-                      case 'b': return PieceType::Bishop; case 'r': return PieceType::Rook;
-                      case 'q': return PieceType::Queen; case 'k': return PieceType::King;
-                      default: return PieceType::None; } };
-    for (char ch : placement) {
-        if (ch == '/') { ++r; c = 0; }
-        else if (ch >= '1' && ch <= '8') c += ch - '0';
-        else { Color col = (ch >= 'a') ? Color::Black : Color::White;
-               char lc = (ch >= 'a') ? ch : char(ch - 'A' + 'a');
-               s.board[sqOf(r, c)] = {pt(lc), col}; ++c; } }
-    s.side = (side == "w") ? Color::White : Color::Black;
-    s.castleWK = castling.find('K') != std::string::npos;
-    s.castleWQ = castling.find('Q') != std::string::npos;
-    s.castleBK = castling.find('k') != std::string::npos;
-    s.castleBQ = castling.find('q') != std::string::npos;
-    return s;
-}
-
 std::string sqName(int sq) { return std::string(1, char('a' + colOf(sq))) + char('0' + (8 - rowOf(sq))); }
 std::string moveName(const Move& m) { return m.valid() ? sqName(m.from) + sqName(m.to) : "(none)"; }
 

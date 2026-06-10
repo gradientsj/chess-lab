@@ -5,6 +5,7 @@
 #include <array>
 #include <vector>
 #include <string>
+#include <sstream>
 #include <random>
 #include <algorithm>
 #include <cstdint>
@@ -69,6 +70,43 @@ inline GameState initialPosition() {
     s.castleWK = s.castleWQ = s.castleBK = s.castleBQ = true;
     s.epSquare = -1;
     s.halfmove = 0;
+    return s;
+}
+
+// Minimal FEN parser. Board layout matches the rest of the header:
+// row 0 = rank 8 (top), so a8 = 0 and h1 = 63.
+inline GameState parseFEN(const std::string& fen) {
+    GameState s;
+    std::istringstream in(fen);
+    std::string placement, side, castling, ep;
+    in >> placement >> side >> castling >> ep;
+
+    int r = 0, c = 0;
+    auto pt = [](char lc) {
+        switch (lc) { case 'p': return PieceType::Pawn; case 'n': return PieceType::Knight;
+                      case 'b': return PieceType::Bishop; case 'r': return PieceType::Rook;
+                      case 'q': return PieceType::Queen; case 'k': return PieceType::King;
+                      default: return PieceType::None; }
+    };
+    for (char ch : placement) {
+        if (ch == '/') { ++r; c = 0; }
+        else if (ch >= '1' && ch <= '8') c += ch - '0';
+        else {
+            Color col = (ch >= 'a') ? Color::Black : Color::White;
+            char lc = (ch >= 'a') ? ch : char(ch - 'A' + 'a');
+            s.board[sqOf(r, c)] = {pt(lc), col};
+            ++c;
+        }
+    }
+    s.side = (side == "w") ? Color::White : Color::Black;
+    s.castleWK = castling.find('K') != std::string::npos;
+    s.castleWQ = castling.find('Q') != std::string::npos;
+    s.castleBK = castling.find('k') != std::string::npos;
+    s.castleBQ = castling.find('q') != std::string::npos;
+    if (ep != "-" && ep.size() == 2) {
+        int col = ep[0] - 'a', rank = ep[1] - '0';
+        s.epSquare = sqOf(8 - rank, col);
+    }
     return s;
 }
 
