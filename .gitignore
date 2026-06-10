@@ -1,0 +1,18 @@
+# build artifacts
+*.exe
+*.o
+*.obj
+
+# local tooling and machine-specific scripts
+.claude/
+Apply-FocusBlock.ps1
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# training artifacts
+rl/runs/
