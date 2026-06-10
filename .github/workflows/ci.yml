@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Perft verification
+        run: |
+          g++ -std=c++20 -O2 perft.cpp -o perft
+          ./perft
+      - name: Search sanity checks
+        run: |
+          g++ -std=c++20 -O2 ai_test.cpp -o ai_test
+          ./ai_test
+      - name: CLI bridge answers a request
+        run: |
+          g++ -std=c++20 -O2 engine_cli.cpp -o engine_cli
+          printf '1 rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\n' | ./engine_cli
+
+  rl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (CPU torch)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e "rl[dev]"
+      - name: Tests
+        run: python -m pytest rl/tests -q
