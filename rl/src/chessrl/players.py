@@ -88,6 +88,40 @@ class EnginePlayer:
             self.proc.terminate()
 
 
+class PolicyPlayer:
+    """The raw policy with no search, as the GRPO-style trainer plays.
+
+    Greedy over the legal-move distribution after a few sampled opening
+    plies, so repeated evaluation games vary without search ever entering
+    the picture: this player measures what the network alone knows.
+    """
+
+    def __init__(self, net, device, seed=0, temp_plies=8):
+        self.net = net
+        self.device = device
+        self.temp_plies = temp_plies
+        self.rng = np.random.default_rng(seed)
+
+    def choose_moves(self, boards):
+        from .encoding import encode_board, legal_actions
+        from .model import evaluate_batch
+
+        planes = np.stack([encode_board(b) for b in boards])
+        logits, _ = evaluate_batch(self.net, planes, self.device)
+        out = []
+        for b, row in zip(boards, logits):
+            moves, indices = legal_actions(b)
+            masked = row[indices] - row[indices].max()
+            probs = np.exp(masked)
+            probs /= probs.sum()
+            if b.ply() < self.temp_plies:
+                k = int(self.rng.choice(len(moves), p=probs))
+            else:
+                k = int(np.argmax(probs))
+            out.append(moves[k])
+        return out
+
+
 class MCTSPlayer:
     """The learned policy plus search, as used for evaluation matches.
 

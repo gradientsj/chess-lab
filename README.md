@@ -85,11 +85,45 @@ plays against itself.
   current best network; the trainer takes SGD steps on a replay buffer of
   recent positions; a candidate is promoted only after winning a gating
   match against the current best, as in AlphaGo Zero.
-- **Measurement** (`arena.py`, `players.py`): the best network is evaluated
-  on a fixed ladder: a uniform random player, a one-ply greedy material
-  player, and the repository's alpha-beta engine at increasing depths,
-  spoken to over `engine_cli`. Results land in `runs/<name>/eval.jsonl`, so
-  progress is a curve against unmoving yardsticks.
+- **Measurement** (`arena.py`, `players.py`): the trained network is
+  evaluated on a fixed ladder: a uniform random player, a one-ply greedy
+  material player, and the repository's alpha-beta engine at increasing
+  depths, spoken to over `engine_cli`. Results land in
+  `runs/<name>/eval.jsonl`, so progress is a curve against unmoving
+  yardsticks.
+
+### Two ways to learn, measured against each other
+
+The repository trains chess two different ways on purpose.
+
+`train.py` is **search-guided self-play** in the AlphaGo Zero family,
+sometimes called expert iteration: the tree search plays better than the
+raw network, the network learns to predict the search, and the improved
+network makes the search stronger on the next iteration. The search is the
+teacher.
+
+`pg.py` is **pure policy gradient** in the style of GRPO (group relative
+policy optimization, the algorithm behind DeepSeek-R1's reasoning training
+and a standard pass in LLM post-training stacks): the policy samples whole
+games directly from its own move distribution, with no search anywhere,
+and learns from nothing but outcomes. Rewards are standardized within a
+group of games, GRPO's substitute for a learned value baseline, and the
+update is the PPO-style clipped surrogate. Where LLM GRPO penalizes KL
+divergence against a reference model, a from-scratch chess policy has no
+reference worth staying close to, so an entropy bonus fills the same
+stabilizing role. One implementation detail worth knowing: updates run
+under the same BatchNorm statistics that sampled the games, because the
+probability ratio at the heart of the method stops meaning anything if the
+normalization shifts between sampling and update.
+
+Both trainers share the encoding, the network architecture, and the
+evaluation ladder, so the question "how much does search-guided learning
+buy over pure policy gradient at equal parameters" gets a measured answer
+rather than an assumed one. Methods that fit chess poorly at this scale
+are left out deliberately: value-based control in the DQN family struggles
+with a 4,672-action space and a reward that only arrives at game end, and
+classic actor-critic with a learned baseline is already half-covered by
+the value head the search-guided loop trains.
 
 ### Run it
 
@@ -97,7 +131,8 @@ plays against itself.
 cd rl
 pip install -e ".[dev]"          # python-chess, numpy, torch
 python -m pytest tests -q        # CPU-only tests
-python -m chessrl.train --run baseline
+python -m chessrl.train --run baseline    # search-guided self-play
+python -m chessrl.pg --run pg-baseline    # GRPO-style policy gradient
 ```
 
 The tests cross-check python-chess against the same published perft counts
