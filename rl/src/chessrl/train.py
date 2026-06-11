@@ -1,14 +1,22 @@
 """The training loop: self-play, gradient steps, gating, evaluation.
 
 Each iteration follows AlphaGo Zero's recipe at desktop scale. Worker
-processes play a batch of self-play games with the current best network and
-ship the samples back; the trainer takes gradient steps on a replay buffer
-of recent positions; the freshly trained candidate then has to beat the
-current best in a gating match before it becomes the network that generates
-the next round of games. Every few iterations the best network is measured
-against fixed opponents (random, greedy material, and the repository's
-alpha-beta engine over the CLI bridge) so progress is a curve against
-unmoving yardsticks rather than a feeling.
+processes play a batch of self-play games with the current data-generating
+network and ship the samples back; one continuously trained network takes
+gradient steps on a replay buffer of recent positions; a snapshot of it
+must then beat the data generator in a gating match before it replaces it.
+
+The split between the trained network and the data generator matters more
+than it looks. Two weak networks draw most of their gating games, so a
+candidate rarely clears the promotion bar early on; if a rejected
+candidate were thrown away and rebuilt from the generator each iteration
+(a tempting reading of the AlphaGo Zero paper), training would never
+compound and the whole loop would idle at the starting line. Training is
+therefore continuous and unconditional, and the gate only controls which
+snapshot is trusted to make data. Every few iterations the trained network
+is measured against fixed opponents (random, greedy material, and the
+repository's alpha-beta engine over the CLI bridge) so progress is a curve
+against unmoving yardsticks rather than a feeling.
 
 Run from the rl/ directory, for example:
     python -m chessrl.train --run baseline --games-per-iter 192 --workers 6
@@ -165,24 +173,29 @@ def main():
     rng = np.random.default_rng(0)
 
     best_path = run_dir / "best.pt"
+    latest_path = run_dir / "latest.pt"
     start_iter = 0
     if cfg.resume and best_path.exists():
         net = load_net(best_path, device)
-        ckpt = torch.load(best_path, map_location="cpu", weights_only=True)
+        resume_from = latest_path if latest_path.exists() else best_path
+        train_net = load_net(resume_from, device)
+        ckpt = torch.load(resume_from, map_location="cpu", weights_only=True)
         start_iter = ckpt["iter"] + 1
-        log("resumed from %s at iteration %d" % (best_path, start_iter))
+        log("resumed from %s at iteration %d" % (resume_from, start_iter))
     else:
         net = PolicyValueNet(cfg.channels, cfg.blocks).to(device).eval()
         save_checkpoint(best_path, net, cfg.channels, cfg.blocks, -1)
+        train_net = PolicyValueNet(cfg.channels, cfg.blocks).to(device).eval()
+        train_net.load_state_dict(net.state_dict())
         with open(run_dir / "config.json", "w") as f:
             json.dump(vars(cfg), f, indent=2)
 
-    n_params = sum(p.numel() for p in net.parameters())
+    n_params = sum(p.numel() for p in train_net.parameters())
     log("device %s, %.2fM parameters, %d workers x %d lockstep games"
         % (device, n_params / 1e6, cfg.workers, cfg.parallel))
 
-    optimizer = torch.optim.SGD(net.parameters(), lr=cfg.lr, momentum=0.9,
-                                weight_decay=1e-4)
+    optimizer = torch.optim.SGD(train_net.parameters(), lr=cfg.lr,
+                                momentum=0.9, weight_decay=1e-4)
     buffer = collections.deque(maxlen=cfg.buffer)
 
     with ProcessPoolExecutor(max_workers=cfg.workers) as pool:
@@ -207,27 +220,21 @@ def main():
                    games["black_wins"], games["plies"] // max(n_games, 1),
                    new_samples, time.time() - t0, len(buffer)))
 
-            # --- gradient steps on the replay buffer ---------------------
+            # --- gradient steps; training compounds across iterations ----
             t0 = time.time()
-            steps = max(200, 2 * new_samples // cfg.batch)
-            candidate = load_net(best_path, device)
-            candidate.load_state_dict(net.state_dict())
-            opt_state = optimizer.state_dict()
-            optimizer = torch.optim.SGD(candidate.parameters(), lr=cfg.lr,
-                                        momentum=0.9, weight_decay=1e-4)
-            optimizer.load_state_dict(opt_state)
-            p_loss, v_loss = train_steps(candidate, optimizer, buffer, steps,
+            steps = max(300, 2 * new_samples // cfg.batch)
+            p_loss, v_loss = train_steps(train_net, optimizer, buffer, steps,
                                          cfg.batch, device, rng)
             log("iter %d  trained %d steps in %.0fs  policy loss %.3f  "
                 "value loss %.3f" % (it, steps, time.time() - t0,
                                      p_loss, v_loss))
 
-            # --- gating: the candidate must beat the best -----------------
+            # --- gating: only the data generator is gated -----------------
             from .arena import play_match
             from .players import MCTSPlayer
             t0 = time.time()
             w, d, l = play_match(
-                MCTSPlayer(candidate, device, cfg.gate_sims, seed=2 * it),
+                MCTSPlayer(train_net, device, cfg.gate_sims, seed=2 * it),
                 MCTSPlayer(net, device, cfg.gate_sims, seed=2 * it + 1),
                 cfg.gate_games)
             score = (w + 0.5 * d) / cfg.gate_games
@@ -237,14 +244,16 @@ def main():
                    "promoted" if promoted else "rejected",
                    time.time() - t0))
             if promoted:
-                net = candidate
+                net.load_state_dict(train_net.state_dict())
                 save_checkpoint(best_path, net, cfg.channels, cfg.blocks, it)
-            save_checkpoint(run_dir / ("iter_%04d.pt" % it), candidate,
+            save_checkpoint(latest_path, train_net, cfg.channels,
+                            cfg.blocks, it)
+            save_checkpoint(run_dir / ("iter_%04d.pt" % it), train_net,
                             cfg.channels, cfg.blocks, it)
 
-            # --- fixed-opponent evaluation -------------------------------
+            # --- fixed-opponent evaluation of the trained network ---------
             if it % cfg.eval_every == 0:
-                evaluate_vs_fixed(net, device, cfg, log, it, eval_path)
+                evaluate_vs_fixed(train_net, device, cfg, log, it, eval_path)
 
 
 if __name__ == "__main__":
